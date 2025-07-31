@@ -139,6 +139,17 @@ struct Var {
 	where   &char   @[required]
 }
 
+const keywords = [
+	'extrn',
+	'auto',
+	'if',
+	'switch',
+	'case',
+	'while',
+	'goto',
+	'return',
+]
+
 fn shift[T](mut arr []T) T {
 	first := arr.first()
 	arr.delete(0)
@@ -226,16 +237,24 @@ fn run() ? {
 
 		expect_token(&l, input_path, stb_c_lexer.clex_id)?
 
+		symbol_name := unsafe { cstring_to_vstring(l.string) }
+		symbol_where := l.where_firstchar
+
+		if keywords.contains(symbol_name) {
+			diag(&l, input_path, symbol_where, 'error: cannot redefine reserved keyword ${symbol_name} as a symbol')
+			diag(&l, input_path, symbol_where, 'note: reserved keywords are: ${keywords.join(', ')}')
+			return none
+		}
+
 		stb_c_lexer.get_token(&l)
 		if l.token == int(`(`) {
-			get_and_expect_token(&l, input_path, int(`)`))?
-			get_and_expect_token(&l, input_path, int(`{`))?
-
-			symbol_name := unsafe { cstring_to_vstring(l.string) }
 			output.writeln('public ${symbol_name}')
 			output.writeln('${symbol_name}:')
 			output.writeln('  push rbp')
 			output.writeln('  mov rbp, rsp')
+
+			get_and_expect_token(&l, input_path, int(`)`))?
+			get_and_expect_token(&l, input_path, int(`{`))?
 
 			for {
 				stb_c_lexer.get_token(&l)
@@ -353,7 +372,7 @@ fn run() ? {
 				}
 			}
 		} else {
-			todo(&l, input_path, l.where_firstchar, @FILE_LINE, 'global variable definition')
+			todo(&l, input_path, symbol_where, @FILE_LINE, 'global variable definition')
 		}
 	}
 
