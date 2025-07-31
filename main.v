@@ -3,20 +3,18 @@ module main
 import os
 import stb_c_lexer
 
-const file_path = 'hello.bee'
-
-fn expect_token(l &stb_c_lexer.Lexer, token int) ? {
+fn expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
 	if l.token != token {
 		loc := stb_c_lexer.Location{}
 		stb_c_lexer.get_location(l, l.where_firstchar, &loc)
-		eprintln('${file_path}:${loc.line_number}:${loc.line_offset + 1}: error: expected token ${token}, but got ${l.token}')
+		eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: expected token ${token}, but got ${l.token}')
 		return none
 	}
 }
 
-fn get_and_expect_token(l &stb_c_lexer.Lexer, token int) ? {
+fn get_and_expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
 	stb_c_lexer.get_token(l)
-	return expect_token(l, token)
+	return expect_token(l, input_path, token)
 }
 
 struct Var {
@@ -25,11 +23,34 @@ struct Var {
 	where &char
 }
 
+fn shift[T](mut arr []T) T {
+	first := arr.first()
+	arr.delete(0)
+	return first
+}
+
+fn usage(mut file os.File) {
+	file.writeln('Usage: bee <input.bee>') or {}
+}
+
 fn run() ? {
+	mut args := os.args.clone()
+
+	shift(mut args)
+
+	if args.len == 0 {
+		mut stderr := os.stderr()
+		usage(mut stderr)
+		eprintln('error: no input file path was provided')
+		return none
+	}
+
+	input_path := shift(mut args)
+
 	mut vars := map[string]Var{}
 	mut auto_vars_count := 0
 
-	contents := os.read_file(file_path) or {
+	contents := os.read_file(input_path) or {
 		eprintln('error: ${err.msg()}: ${os.get_error_msg(err.code()).to_lower()}')
 		return none
 	}
@@ -51,13 +72,13 @@ fn run() ? {
 			break
 		}
 
-		expect_token(&l, stb_c_lexer.clex_id)?
+		expect_token(&l, input_path, stb_c_lexer.clex_id)?
 		symbol_name := unsafe { cstring_to_vstring(l.string) }
 		println('public ${symbol_name}')
 		println('${symbol_name}:')
-		get_and_expect_token(&l, int(`(`))?
-		get_and_expect_token(&l, int(`)`))?
-		get_and_expect_token(&l, int(`{`))?
+		get_and_expect_token(&l, input_path, int(`(`))?
+		get_and_expect_token(&l, input_path, int(`)`))?
+		get_and_expect_token(&l, input_path, int(`{`))?
 
 		println('  push rbp')
 		println('  mov rbp, rsp')
@@ -71,25 +92,25 @@ fn run() ? {
 				println('  ret')
 				break
 			}
-			expect_token(&l, stb_c_lexer.clex_id)?
+			expect_token(&l, input_path, stb_c_lexer.clex_id)?
 			match unsafe { l.string.vstring() } {
 				'extrn' {
-					get_and_expect_token(&l, stb_c_lexer.clex_id)?
+					get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
 					name := unsafe { cstring_to_vstring(l.string) }
 					println('  extrn ${name}')
-					get_and_expect_token(&l, int(`;`))?
+					get_and_expect_token(&l, input_path, int(`;`))?
 				}
 				'auto' {
-					get_and_expect_token(&l, stb_c_lexer.clex_id)?
+					get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
 					auto_vars_count += 1
 					name := unsafe { cstring_to_vstring(l.string) }
 					name_where := l.where_firstchar
 					if existing := vars[name] {
 						loc := stb_c_lexer.Location{}
 						stb_c_lexer.get_location(&l, name_where, &loc)
-						eprintln('${file_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${existing.name} has already been defined')
+						eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${existing.name} has already been defined')
 						stb_c_lexer.get_location(&l, existing.where, &loc)
-						eprintln('${file_path}:${loc.line_number}:${loc.line_offset + 1}: info: first definition is located here')
+						eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: info: first definition is located here')
 						return none
 					}
 					vars[name] = Var{
@@ -98,7 +119,7 @@ fn run() ? {
 						where: name_where
 					}
 					println('  sub rsp, 8')
-					get_and_expect_token(&l, int(`;`))?
+					get_and_expect_token(&l, input_path, int(`;`))?
 				}
 				else {
 					name := unsafe { cstring_to_vstring(l.string) }
@@ -109,38 +130,38 @@ fn run() ? {
 							var := vars[name] or {
 								loc := stb_c_lexer.Location{}
 								stb_c_lexer.get_location(&l, name_where, &loc)
-								eprintln('${file_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${name} does not exist')
+								eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${name} does not exist')
 								return none
 							}
 
-							get_and_expect_token(&l, stb_c_lexer.clex_intlit)?
+							get_and_expect_token(&l, input_path, stb_c_lexer.clex_intlit)?
 							println('  mov QWORD [rbp-${var.index * 8}], ${l.int_number}')
-							get_and_expect_token(&l, int(`;`))?
+							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						int(`(`) {
 							stb_c_lexer.get_token(&l)
 							if l.token != int(`)`) {
-								expect_token(&l, stb_c_lexer.clex_id)
+								expect_token(&l, input_path, stb_c_lexer.clex_id)
 								var_name := unsafe { cstring_to_vstring(l.string) }
 								var_name_where := l.where_firstchar
 								var := vars[var_name] or {
 									loc := stb_c_lexer.Location{}
 									stb_c_lexer.get_location(&l, var_name_where, &loc)
-									eprintln('${file_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${var_name} does not exist')
+									eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${var_name} does not exist')
 									return none
 								}
 
 								println('  mov rdi, [rbp-${var.index * 8}]')
-								get_and_expect_token(&l, int(`)`))?
+								get_and_expect_token(&l, input_path, int(`)`))?
 							}
 
 							println('  call ${name}')
-							get_and_expect_token(&l, int(`;`))?
+							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						else {
 							loc := stb_c_lexer.Location{}
 							stb_c_lexer.get_location(l, l.where_firstchar, &loc)
-							eprintln('${file_path}:${loc.line_number}:${loc.line_offset + 1}: error: unexpected token ${l.token}')
+							eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: unexpected token ${l.token}')
 							return none
 						}
 					}
