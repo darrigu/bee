@@ -9,9 +9,105 @@ fn diag(l &stb_c_lexer.Lexer, path string, where &char, message string) {
 	eprintln('${path}:${loc.line_number}:${loc.line_offset + 1}: ${message}')
 }
 
+fn token_to_str(token int) string {
+	match token {
+		stb_c_lexer.clex_intlit {
+			return 'integer literal'
+		}
+		stb_c_lexer.clex_floatlit {
+			return 'floating-point literal'
+		}
+		stb_c_lexer.clex_id {
+			return 'identifier'
+		}
+		stb_c_lexer.clex_dqstring {
+			return 'double-quoted string'
+		}
+		stb_c_lexer.clex_sqstring {
+			return 'single-quoted string'
+		}
+		stb_c_lexer.clex_charlit {
+			return 'character literal'
+		}
+		stb_c_lexer.clex_eq {
+			return '`=`'
+		}
+		stb_c_lexer.clex_noteq {
+			return '`!=`'
+		}
+		stb_c_lexer.clex_lesseq {
+			return '`<=`'
+		}
+		stb_c_lexer.clex_greatereq {
+			return '`>=`'
+		}
+		stb_c_lexer.clex_andand {
+			return '`&&`'
+		}
+		stb_c_lexer.clex_oror {
+			return '`||`'
+		}
+		stb_c_lexer.clex_shl {
+			return '`<<`'
+		}
+		stb_c_lexer.clex_shr {
+			return '`>>`'
+		}
+		stb_c_lexer.clex_plusplus {
+			return '`++`'
+		}
+		stb_c_lexer.clex_minusminus {
+			return '`--`'
+		}
+		stb_c_lexer.clex_pluseq {
+			return '`+=`'
+		}
+		stb_c_lexer.clex_minuseq {
+			return '`-=`'
+		}
+		stb_c_lexer.clex_muleq {
+			return '`*=`'
+		}
+		stb_c_lexer.clex_diveq {
+			return '`/=`'
+		}
+		stb_c_lexer.clex_modeq {
+			return '`%=`'
+		}
+		stb_c_lexer.clex_andeq {
+			return '`&=`'
+		}
+		stb_c_lexer.clex_oreq {
+			return '`|=`'
+		}
+		stb_c_lexer.clex_xoreq {
+			return '`^=`'
+		}
+		stb_c_lexer.clex_arrow {
+			return '`->`'
+		}
+		stb_c_lexer.clex_eqarrow {
+			return '`=>`'
+		}
+		stb_c_lexer.clex_shleq {
+			return '`<<=`'
+		}
+		stb_c_lexer.clex_shreq {
+			return '`>>=`'
+		}
+		else {
+			if token < 256 {
+				return '`${rune(token)}`'
+			} else {
+				return '<<<UNKNOWN TOKEN ${token}>>>'
+			}
+		}
+	}
+}
+
 fn expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
 	if l.token != token {
-		diag(l, input_path, l.where_firstchar, 'error: expected token ${token}, but got ${l.token}')
+		diag(l, input_path, l.where_firstchar, 'error: expected ${token_to_str(token)}, but got ${token_to_str(l.token)}')
 		return none
 	}
 }
@@ -156,7 +252,7 @@ fn run() ? {
 							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						else {
-							diag(&l, input_path, l.where_firstchar, 'error: unexpected token ${l.token}')
+							diag(&l, input_path, l.where_firstchar, 'error: unexpected ${token_to_str(l.token)}')
 							return none
 						}
 					}
