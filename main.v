@@ -3,11 +3,15 @@ module main
 import os
 import stb_c_lexer
 
+fn diag(l &stb_c_lexer.Lexer, path string, where &char, message string) {
+	loc := stb_c_lexer.Location{}
+	stb_c_lexer.get_location(l, where, &loc)
+	eprintln('${path}:${loc.line_number}:${loc.line_offset + 1}: ${message}')
+}
+
 fn expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
 	if l.token != token {
-		loc := stb_c_lexer.Location{}
-		stb_c_lexer.get_location(l, l.where_firstchar, &loc)
-		eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: expected token ${token}, but got ${l.token}')
+		diag(l, input_path, l.where_firstchar, 'error: expected token ${token}, but got ${l.token}')
 		return none
 	}
 }
@@ -106,11 +110,8 @@ fn run() ? {
 					name := unsafe { cstring_to_vstring(l.string) }
 					name_where := l.where_firstchar
 					if existing := vars[name] {
-						loc := stb_c_lexer.Location{}
-						stb_c_lexer.get_location(&l, name_where, &loc)
-						eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${existing.name} has already been defined')
-						stb_c_lexer.get_location(&l, existing.where, &loc)
-						eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: info: first definition is located here')
+						diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
+						diag(l, input_path, existing.where, 'info: first definition is located here')
 						return none
 					}
 					vars[name] = Var{
@@ -128,9 +129,7 @@ fn run() ? {
 					match l.token {
 						int(`=`) {
 							var := vars[name] or {
-								loc := stb_c_lexer.Location{}
-								stb_c_lexer.get_location(&l, name_where, &loc)
-								eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${name} does not exist')
+								diag(&l, input_path, name_where, 'error: variable ${name} does not exist')
 								return none
 							}
 
@@ -145,9 +144,7 @@ fn run() ? {
 								var_name := unsafe { cstring_to_vstring(l.string) }
 								var_name_where := l.where_firstchar
 								var := vars[var_name] or {
-									loc := stb_c_lexer.Location{}
-									stb_c_lexer.get_location(&l, var_name_where, &loc)
-									eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: variable ${var_name} does not exist')
+									diag(&l, input_path, var_name_where, 'error: variable ${var_name} does not exist')
 									return none
 								}
 
@@ -159,9 +156,7 @@ fn run() ? {
 							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						else {
-							loc := stb_c_lexer.Location{}
-							stb_c_lexer.get_location(l, l.where_firstchar, &loc)
-							eprintln('${input_path}:${loc.line_number}:${loc.line_offset + 1}: error: unexpected token ${l.token}')
+							diag(&l, input_path, l.where_firstchar, 'error: unexpected token ${l.token}')
 							return none
 						}
 					}
