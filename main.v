@@ -11,6 +11,14 @@ fn diag(l &stb_c_lexer.Lexer, path string, where &char, message string) {
 	eprintln('${path}:${loc.line_number}:${loc.line_offset + 1}: ${message}')
 }
 
+fn todo(l &stb_c_lexer.Lexer, path string, where &char, src_loc string, message string) {
+	loc := stb_c_lexer.Location{}
+	stb_c_lexer.get_location(l, where, &loc)
+	eprintln('${path}:${loc.line_number}:${loc.line_offset + 1}: todo: ${message}')
+	eprintln('${src_loc}: info: implementation should go here')
+	exit(1)
+}
+
 fn token_to_str(token int) string {
 	match token {
 		stb_c_lexer.clex_intlit {
@@ -119,10 +127,16 @@ fn get_and_expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
 	return expect_token(l, input_path, token)
 }
 
+enum Storage {
+	external
+	auto
+}
+
 struct Var {
-	name  string
-	index int
-	where &char
+	name    string  @[required]
+	storage Storage @[required]
+	index   int     @[required]
+	where   &char   @[required]
 }
 
 fn shift[T](mut arr []T) T {
@@ -234,12 +248,28 @@ fn run() ? {
 			match unsafe { l.string.vstring() } {
 				'extrn' {
 					get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
+
 					name := unsafe { cstring_to_vstring(l.string) }
+					name_where := l.where_firstchar
+					if existing := vars[name] {
+						diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
+						diag(l, input_path, existing.where, 'info: first definition is located here')
+						return none
+					}
+
+					vars[name] = Var{
+						name:    name
+						storage: .external
+						index:   0
+						where:   name_where
+					}
+
 					output.writeln('  extrn ${name}')
 					get_and_expect_token(&l, input_path, int(`;`))?
 				}
 				'auto' {
 					get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
+
 					auto_vars_count += 1
 					name := unsafe { cstring_to_vstring(l.string) }
 					name_where := l.where_firstchar
@@ -248,11 +278,14 @@ fn run() ? {
 						diag(l, input_path, existing.where, 'info: first definition is located here')
 						return none
 					}
+
 					vars[name] = Var{
-						name:  name
-						index: auto_vars_count
-						where: name_where
+						name:    name
+						storage: .auto
+						index:   auto_vars_count
+						where:   name_where
 					}
+
 					output.writeln('  sub rsp, 8')
 					get_and_expect_token(&l, input_path, int(`;`))?
 				}
@@ -268,17 +301,29 @@ fn run() ? {
 							}
 
 							get_and_expect_token(&l, input_path, stb_c_lexer.clex_intlit)?
-							output.writeln('  mov QWORD [rbp-${var.index * 8}], ${l.int_number}')
+							match var.storage {
+								.external {
+									todo(l, input_path, name_where, @FILE_LINE, 'assignment to external variables')
+								}
+								.auto {
+									output.writeln('  mov QWORD [rbp-${var.index * 8}], ${l.int_number}')
+								}
+							}
+
 							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						int(`(`) {
+							func := vars[name] or {
+								diag(&l, input_path, name_where, 'error: function ${name} does not exist')
+								return none
+							}
+
 							stb_c_lexer.get_token(&l)
 							if l.token != int(`)`) {
 								expect_token(&l, input_path, stb_c_lexer.clex_id)
 								var_name := unsafe { cstring_to_vstring(l.string) }
-								var_name_where := l.where_firstchar
 								var := vars[var_name] or {
-									diag(&l, input_path, var_name_where, 'error: variable ${var_name} does not exist')
+									diag(&l, input_path, l.where_firstchar, 'error: variable ${var_name} does not exist')
 									return none
 								}
 
@@ -286,7 +331,15 @@ fn run() ? {
 								get_and_expect_token(&l, input_path, int(`)`))?
 							}
 
-							output.writeln('  call ${name}')
+							match func.storage {
+								.external {
+									output.writeln('  call ${name}')
+								}
+								.auto {
+									todo(&l, input_path, name_where, @FILE_LINE, 'calling function from auto variable')
+								}
+							}
+
 							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						else {

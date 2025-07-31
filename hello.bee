@@ -1,12 +1,6 @@
-hello() {
+main() {
    extrn putchar;
    auto a;
    a = 72;
    putchar(a);
-}
-
-main() {
-   hello();
-   hello();
-   hello();
 }
