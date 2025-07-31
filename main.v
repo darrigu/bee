@@ -1,6 +1,8 @@
 module main
 
 import os
+import flag
+import strings
 import stb_c_lexer
 
 fn diag(l &stb_c_lexer.Lexer, path string, where &char, message string) {
@@ -129,39 +131,75 @@ fn shift[T](mut arr []T) T {
 	return first
 }
 
-fn usage(mut file os.File) {
-	file.writeln('Usage: bee <input.bee>') or {}
+struct Config {
+	output_path string @[long: output; short: o; xdoc: 'Set output file path']
+	show_help   bool   @[long: help; short: h; xdoc: 'Print this help message']
+}
+
+fn print_help(mut file os.File) {
+	usage := 'Usage: bee <input.bee> -o <output.asm>'
+	help := flag.to_doc[Config](
+		description: usage
+		options:     flag.DocOptions{
+			flag_header: 'Options:'
+			compact:     true
+		}
+	) or { usage }
+	file.writeln(help) or {}
 }
 
 fn run() ? {
-	mut args := os.args.clone()
+	config, no_matches := flag.to_struct[Config](os.args, skip: 1) or {
+		eprintln('error: ${err}')
+		return none
+	}
 
-	shift(mut args)
+	mut maybe_input_path := ?string(none)
 
-	if args.len == 0 {
+	for no_match in no_matches {
+		if no_match.starts_with('-') {
+			eprintln('error: unknown flag `${no_match}`')
+			return none
+		}
+		maybe_input_path = no_match
+	}
+
+	if config.show_help {
+		mut stdout := os.stdout()
+		print_help(mut stdout)
+		exit(0)
+	}
+
+	input_path := maybe_input_path or {
 		mut stderr := os.stderr()
-		usage(mut stderr)
+		print_help(mut stderr)
 		eprintln('error: no input file path was provided')
 		return none
 	}
 
-	input_path := shift(mut args)
+	if config.output_path == '' {
+		mut stderr := os.stderr()
+		print_help(mut stderr)
+		eprintln('error: no output file path was provided')
+		return none
+	}
 
 	mut vars := map[string]Var{}
 	mut auto_vars_count := 0
 
-	contents := os.read_file(input_path) or {
+	input := os.read_file(input_path) or {
 		eprintln('error: ${err.msg()}: ${os.get_error_msg(err.code()).to_lower()}')
 		return none
 	}
 
 	l := stb_c_lexer.Lexer{}
 	string_store := []u8{len: 1024}
-	stb_c_lexer.init(&l, contents.str, unsafe { contents.str + contents.len }, string_store.data,
+	stb_c_lexer.init(&l, input.str, unsafe { input.str + input.len }, string_store.data,
 		string_store.len)
 
-	println('format ELF64')
-	println('section ".text" executable')
+	mut output := strings.new_builder(0)
+	output.writeln('format ELF64')
+	output.writeln('section ".text" executable')
 
 	for {
 		vars.clear()
@@ -174,22 +212,22 @@ fn run() ? {
 
 		expect_token(&l, input_path, stb_c_lexer.clex_id)?
 		symbol_name := unsafe { cstring_to_vstring(l.string) }
-		println('public ${symbol_name}')
-		println('${symbol_name}:')
+		output.writeln('public ${symbol_name}')
+		output.writeln('${symbol_name}:')
 		get_and_expect_token(&l, input_path, int(`(`))?
 		get_and_expect_token(&l, input_path, int(`)`))?
 		get_and_expect_token(&l, input_path, int(`{`))?
 
-		println('  push rbp')
-		println('  mov rbp, rsp')
+		output.writeln('  push rbp')
+		output.writeln('  mov rbp, rsp')
 
 		for {
 			stb_c_lexer.get_token(&l)
 			if l.token == int(`}`) {
-				println('  mov rsp, rbp')
-				println('  pop rbp')
-				println('  mov rax, 0')
-				println('  ret')
+				output.writeln('  mov rsp, rbp')
+				output.writeln('  pop rbp')
+				output.writeln('  mov rax, 0')
+				output.writeln('  ret')
 				break
 			}
 			expect_token(&l, input_path, stb_c_lexer.clex_id)?
@@ -197,7 +235,7 @@ fn run() ? {
 				'extrn' {
 					get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
 					name := unsafe { cstring_to_vstring(l.string) }
-					println('  extrn ${name}')
+					output.writeln('  extrn ${name}')
 					get_and_expect_token(&l, input_path, int(`;`))?
 				}
 				'auto' {
@@ -215,7 +253,7 @@ fn run() ? {
 						index: auto_vars_count
 						where: name_where
 					}
-					println('  sub rsp, 8')
+					output.writeln('  sub rsp, 8')
 					get_and_expect_token(&l, input_path, int(`;`))?
 				}
 				else {
@@ -230,7 +268,7 @@ fn run() ? {
 							}
 
 							get_and_expect_token(&l, input_path, stb_c_lexer.clex_intlit)?
-							println('  mov QWORD [rbp-${var.index * 8}], ${l.int_number}')
+							output.writeln('  mov QWORD [rbp-${var.index * 8}], ${l.int_number}')
 							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						int(`(`) {
@@ -244,11 +282,11 @@ fn run() ? {
 									return none
 								}
 
-								println('  mov rdi, [rbp-${var.index * 8}]')
+								output.writeln('  mov rdi, [rbp-${var.index * 8}]')
 								get_and_expect_token(&l, input_path, int(`)`))?
 							}
 
-							println('  call ${name}')
+							output.writeln('  call ${name}')
 							get_and_expect_token(&l, input_path, int(`;`))?
 						}
 						else {
@@ -259,6 +297,11 @@ fn run() ? {
 				}
 			}
 		}
+	}
+
+	os.write_file(config.output_path, output.str()) or {
+		eprintln('error: ${err.msg()}: ${os.get_error_msg(err.code()).to_lower()}')
+		return none
 	}
 }
 
