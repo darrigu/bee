@@ -115,14 +115,14 @@ fn token_to_str(token int) string {
 	}
 }
 
-fn expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
+fn expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ! {
 	if l.token != token {
 		diag(l, input_path, l.where_firstchar, 'error: expected ${token_to_str(token)}, but got ${token_to_str(l.token)}')
-		return none
+		return Error{}
 	}
 }
 
-fn get_and_expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ? {
+fn get_and_expect_token(l &stb_c_lexer.Lexer, input_path string, token int) ! {
 	stb_c_lexer.get_token(l)
 	return expect_token(l, input_path, token)
 }
@@ -170,7 +170,7 @@ struct Funcall {
 
 type Op = ExtrnVar | AutoVar | AutoAssign | Funcall
 
-fn generate_fasm_x86_64_header(mut output strings.Builder) ? {
+fn generate_fasm_x86_64_header(mut output strings.Builder) {
 	output.writeln('format ELF64')
 	output.writeln('section ".text" executable')
 }
@@ -211,7 +211,7 @@ fn generate_fasm_x86_64_linux_func_body(body []Op, mut output strings.Builder) {
 	}
 }
 
-fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[string]Var, auto_vars_count &int, mut body []Op) ? {
+fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[string]Var, auto_vars_count &int, mut body []Op) ! {
 	vars.clear()
 	unsafe {
 		*auto_vars_count = 0
@@ -221,17 +221,17 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 		if l.token == int(`}`) {
 			break
 		}
-		expect_token(l, input_path, stb_c_lexer.clex_id)?
+		expect_token(l, input_path, stb_c_lexer.clex_id)!
 		match unsafe { l.string.vstring() } {
 			'extrn' {
-				get_and_expect_token(l, input_path, stb_c_lexer.clex_id)?
+				get_and_expect_token(l, input_path, stb_c_lexer.clex_id)!
 
 				name := unsafe { cstring_to_vstring(l.string) }
 				name_where := l.where_firstchar
 				if existing := vars[name] {
 					diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
 					diag(l, input_path, existing.where, 'info: first definition is located here')
-					return none
+					return Error{}
 				}
 
 				vars[name] = Var{
@@ -242,10 +242,10 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 				}
 
 				body << ExtrnVar{name}
-				get_and_expect_token(l, input_path, int(`;`))?
+				get_and_expect_token(l, input_path, int(`;`))!
 			}
 			'auto' {
-				get_and_expect_token(l, input_path, stb_c_lexer.clex_id)?
+				get_and_expect_token(l, input_path, stb_c_lexer.clex_id)!
 
 				unsafe {
 					*auto_vars_count += 1
@@ -255,7 +255,7 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 				if existing := vars[name] {
 					diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
 					diag(l, input_path, existing.where, 'info: first definition is located here')
-					return none
+					return Error{}
 				}
 
 				vars[name] = Var{
@@ -266,7 +266,7 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 				}
 
 				body << AutoVar{1}
-				get_and_expect_token(l, input_path, int(`;`))?
+				get_and_expect_token(l, input_path, int(`;`))!
 			}
 			else {
 				name := unsafe { cstring_to_vstring(l.string) }
@@ -276,10 +276,10 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 					int(`=`) {
 						var := vars[name] or {
 							diag(l, input_path, name_where, 'error: variable ${name} does not exist')
-							return none
+							return Error{}
 						}
 
-						get_and_expect_token(l, input_path, stb_c_lexer.clex_intlit)?
+						get_and_expect_token(l, input_path, stb_c_lexer.clex_intlit)!
 						match var.storage {
 							.external {
 								todo(l, input_path, name_where, @FILE_LINE, 'assignment to external variables')
@@ -289,26 +289,26 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 							}
 						}
 
-						get_and_expect_token(l, input_path, int(`;`))?
+						get_and_expect_token(l, input_path, int(`;`))!
 					}
 					int(`(`) {
 						func := vars[name] or {
 							diag(l, input_path, name_where, 'error: function ${name} does not exist')
-							return none
+							return Error{}
 						}
 
 						mut arg := ?int(none)
 						stb_c_lexer.get_token(l)
 						if l.token != int(`)`) {
-							expect_token(l, input_path, stb_c_lexer.clex_id)
+							expect_token(l, input_path, stb_c_lexer.clex_id)!
 							var_name := unsafe { cstring_to_vstring(l.string) }
 							var := vars[var_name] or {
 								diag(l, input_path, l.where_firstchar, 'error: variable ${var_name} does not exist')
-								return none
+								return Error{}
 							}
 
 							arg = var.index
-							get_and_expect_token(l, input_path, int(`)`))?
+							get_and_expect_token(l, input_path, int(`)`))!
 						}
 
 						match func.storage {
@@ -320,11 +320,11 @@ fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[strin
 							}
 						}
 
-						get_and_expect_token(l, input_path, int(`;`))?
+						get_and_expect_token(l, input_path, int(`;`))!
 					}
 					else {
 						diag(l, input_path, l.where_firstchar, 'error: unexpected ${token_to_str(l.token)}')
-						return none
+						return Error{}
 					}
 				}
 			}
@@ -355,10 +355,10 @@ fn print_help(mut file os.File) {
 	file.writeln(help) or {}
 }
 
-fn run() ? {
+fn run() ! {
 	config, no_matches := flag.to_struct[Config](os.args, skip: 1) or {
 		eprintln('error: ${err}')
-		return none
+		return Error{}
 	}
 
 	mut maybe_input_path := ?string(none)
@@ -366,7 +366,7 @@ fn run() ? {
 	for no_match in no_matches {
 		if no_match.starts_with('-') {
 			eprintln('error: unknown flag `${no_match}`')
-			return none
+			return Error{}
 		}
 		maybe_input_path = no_match
 	}
@@ -381,14 +381,14 @@ fn run() ? {
 		mut stderr := os.stderr()
 		print_help(mut stderr)
 		eprintln('error: no input file path was provided')
-		return none
+		return Error{}
 	}
 
 	if config.output_path == '' {
 		mut stderr := os.stderr()
 		print_help(mut stderr)
 		eprintln('error: no output file path was provided')
-		return none
+		return Error{}
 	}
 
 	mut vars := map[string]Var{}
@@ -397,7 +397,7 @@ fn run() ? {
 
 	input := os.read_file(input_path) or {
 		eprintln('error: ${err.msg()}: ${os.get_error_msg(err.code()).to_lower()}')
-		return none
+		return Error{}
 	}
 
 	l := stb_c_lexer.Lexer{}
@@ -414,7 +414,7 @@ fn run() ? {
 			break
 		}
 
-		expect_token(&l, input_path, stb_c_lexer.clex_id)?
+		expect_token(&l, input_path, stb_c_lexer.clex_id)!
 
 		symbol_name := unsafe { cstring_to_vstring(l.string) }
 		symbol_where := l.where_firstchar
@@ -422,16 +422,16 @@ fn run() ? {
 		if keywords.contains(symbol_name) {
 			diag(&l, input_path, symbol_where, 'error: cannot redefine reserved keyword ${symbol_name} as a symbol')
 			diag(&l, input_path, symbol_where, 'note: reserved keywords are: ${keywords.join(', ')}')
-			return none
+			return Error{}
 		}
 
 		stb_c_lexer.get_token(&l)
 		if l.token == int(`(`) {
-			get_and_expect_token(&l, input_path, int(`)`))?
-			get_and_expect_token(&l, input_path, int(`{`))?
+			get_and_expect_token(&l, input_path, int(`)`))!
+			get_and_expect_token(&l, input_path, int(`{`))!
 
 			generate_fasm_x86_64_linux_func_prolog(symbol_name, mut output)
-			compile_func_body(&l, input_path, mut vars, &auto_vars_count, mut func_body)?
+			compile_func_body(&l, input_path, mut vars, &auto_vars_count, mut func_body)!
 			generate_fasm_x86_64_linux_func_body(func_body, mut output)
 			generate_fasm_x86_64_linux_func_epilog(mut output)
 
@@ -443,7 +443,7 @@ fn run() ? {
 
 	os.write_file(config.output_path, output.str()) or {
 		eprintln('error: ${err.msg()}: ${os.get_error_msg(err.code()).to_lower()}')
-		return none
+		return Error{}
 	}
 }
 
