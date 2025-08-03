@@ -170,9 +170,26 @@ struct Funcall {
 
 type Op = ExtrnVar | AutoVar | AutoAssign | Funcall
 
-fn generate_fasm_x86_64_header(mut output strings.Builder) {
+enum Target {
+	fasm_x86_64_linux
+}
+
+const targets = {
+	'fasm-x86_64-linux': Target.fasm_x86_64_linux
+	'default':           Target.fasm_x86_64_linux
+}
+
+fn generate_fasm_x86_64_linux_header(mut output strings.Builder) {
 	output.writeln('format ELF64')
 	output.writeln('section ".text" executable')
+}
+
+fn generate_header(mut output strings.Builder, target Target) {
+	match target {
+		.fasm_x86_64_linux {
+			generate_fasm_x86_64_linux_header(mut output)
+		}
+	}
 }
 
 fn generate_fasm_x86_64_linux_func_prolog(name string, mut output strings.Builder) {
@@ -182,11 +199,27 @@ fn generate_fasm_x86_64_linux_func_prolog(name string, mut output strings.Builde
 	output.writeln('  mov rbp, rsp')
 }
 
+fn generate_func_prolog(name string, mut output strings.Builder, target Target) {
+	match target {
+		.fasm_x86_64_linux {
+			generate_fasm_x86_64_linux_func_prolog(name, mut output)
+		}
+	}
+}
+
 fn generate_fasm_x86_64_linux_func_epilog(mut output strings.Builder) {
 	output.writeln('  mov rsp, rbp')
 	output.writeln('  pop rbp')
 	output.writeln('  mov rax, 0')
 	output.writeln('  ret')
+}
+
+fn generate_func_epilog(mut output strings.Builder, target Target) {
+	match target {
+		.fasm_x86_64_linux {
+			generate_fasm_x86_64_linux_func_epilog(mut output)
+		}
+	}
 }
 
 fn generate_fasm_x86_64_linux_func_body(body []Op, mut output strings.Builder) {
@@ -207,6 +240,14 @@ fn generate_fasm_x86_64_linux_func_body(body []Op, mut output strings.Builder) {
 				}
 				output.writeln('  call ${op.name}')
 			}
+		}
+	}
+}
+
+fn generate_func_body(body []Op, mut output strings.Builder, target Target) {
+	match target {
+		.fasm_x86_64_linux {
+			generate_fasm_x86_64_linux_func_body(body, mut output)
 		}
 	}
 }
@@ -339,7 +380,8 @@ fn shift[T](mut arr []T) T {
 }
 
 struct Config {
-	output_path string @[long: output; short: o; xdoc: 'Set output file path']
+	output_path string = 'default' @[long: output; short: o; xdoc: 'Set output file path']
+	target      string @[xdoc: 'Set target platform']
 	show_help   bool   @[long: help; short: h; xdoc: 'Print this help message']
 }
 
@@ -391,6 +433,21 @@ fn run() ! {
 		return Error{}
 	}
 
+	target := targets[config.target] or {
+		eprintln('error: unknown target `${config.target}`')
+		eprintln('info: available targets:')
+		for name, target in targets {
+			if name != 'default' {
+				if target == targets['default'] {
+					eprintln('  - ${name} (default)')
+				} else {
+					eprintln('  - ${name}')
+				}
+			}
+		}
+		return Error{}
+	}
+
 	mut vars := map[string]Var{}
 	mut auto_vars_count := 0
 	mut func_body := []Op{}
@@ -406,7 +463,7 @@ fn run() ! {
 		string_store.len)
 
 	mut output := strings.new_builder(0)
-	generate_fasm_x86_64_header(mut output)
+	generate_header(mut output, target)
 
 	for {
 		stb_c_lexer.get_token(&l)
@@ -430,10 +487,10 @@ fn run() ! {
 			get_and_expect_token(&l, input_path, int(`)`))!
 			get_and_expect_token(&l, input_path, int(`{`))!
 
-			generate_fasm_x86_64_linux_func_prolog(symbol_name, mut output)
+			generate_func_prolog(symbol_name, mut output, target)
 			compile_func_body(&l, input_path, mut vars, &auto_vars_count, mut func_body)!
-			generate_fasm_x86_64_linux_func_body(func_body, mut output)
-			generate_fasm_x86_64_linux_func_epilog(mut output)
+			generate_func_body(func_body, mut output, target)
+			generate_func_epilog(mut output, target)
 
 			func_body.clear()
 		} else {
