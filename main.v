@@ -150,6 +150,188 @@ const keywords = [
 	'return',
 ]
 
+struct ExtrnVar {
+	name string
+}
+
+struct AutoVar {
+	count int
+}
+
+struct AutoAssign {
+	index int
+	value int
+}
+
+struct Funcall {
+	name string
+	arg  ?int
+}
+
+type Op = ExtrnVar | AutoVar | AutoAssign | Funcall
+
+fn generate_fasm_x86_64_header(mut output strings.Builder) ? {
+	output.writeln('format ELF64')
+	output.writeln('section ".text" executable')
+}
+
+fn generate_fasm_x86_64_linux_func_prolog(name string, mut output strings.Builder) {
+	output.writeln('public ${name}')
+	output.writeln('${name}:')
+	output.writeln('  push rbp')
+	output.writeln('  mov rbp, rsp')
+}
+
+fn generate_fasm_x86_64_linux_func_epilog(mut output strings.Builder) {
+	output.writeln('  mov rsp, rbp')
+	output.writeln('  pop rbp')
+	output.writeln('  mov rax, 0')
+	output.writeln('  ret')
+}
+
+fn generate_fasm_x86_64_linux_func_body(body []Op, mut output strings.Builder) {
+	for op in body {
+		match op {
+			ExtrnVar {
+				output.writeln('  extrn ${op.name}')
+			}
+			AutoVar {
+				output.writeln('  sub rsp, ${8 * op.count}')
+			}
+			AutoAssign {
+				output.writeln('  mov QWORD [rbp-${op.index * 8}], ${op.value}')
+			}
+			Funcall {
+				if index := op.arg {
+					output.writeln('  mov rdi, [rbp-${index * 8}]')
+				}
+				output.writeln('  call ${op.name}')
+			}
+		}
+	}
+}
+
+fn compile_func_body(l &stb_c_lexer.Lexer, input_path string, mut vars map[string]Var, auto_vars_count &int, mut body []Op) ? {
+	vars.clear()
+	unsafe {
+		*auto_vars_count = 0
+	}
+	for {
+		stb_c_lexer.get_token(l)
+		if l.token == int(`}`) {
+			break
+		}
+		expect_token(l, input_path, stb_c_lexer.clex_id)?
+		match unsafe { l.string.vstring() } {
+			'extrn' {
+				get_and_expect_token(l, input_path, stb_c_lexer.clex_id)?
+
+				name := unsafe { cstring_to_vstring(l.string) }
+				name_where := l.where_firstchar
+				if existing := vars[name] {
+					diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
+					diag(l, input_path, existing.where, 'info: first definition is located here')
+					return none
+				}
+
+				vars[name] = Var{
+					name:    name
+					storage: .external
+					index:   0
+					where:   name_where
+				}
+
+				body << ExtrnVar{name}
+				get_and_expect_token(l, input_path, int(`;`))?
+			}
+			'auto' {
+				get_and_expect_token(l, input_path, stb_c_lexer.clex_id)?
+
+				unsafe {
+					*auto_vars_count += 1
+				}
+				name := unsafe { cstring_to_vstring(l.string) }
+				name_where := l.where_firstchar
+				if existing := vars[name] {
+					diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
+					diag(l, input_path, existing.where, 'info: first definition is located here')
+					return none
+				}
+
+				vars[name] = Var{
+					name:    name
+					storage: .auto
+					index:   auto_vars_count
+					where:   name_where
+				}
+
+				body << AutoVar{1}
+				get_and_expect_token(l, input_path, int(`;`))?
+			}
+			else {
+				name := unsafe { cstring_to_vstring(l.string) }
+				name_where := l.where_firstchar
+				stb_c_lexer.get_token(l)
+				match l.token {
+					int(`=`) {
+						var := vars[name] or {
+							diag(l, input_path, name_where, 'error: variable ${name} does not exist')
+							return none
+						}
+
+						get_and_expect_token(l, input_path, stb_c_lexer.clex_intlit)?
+						match var.storage {
+							.external {
+								todo(l, input_path, name_where, @FILE_LINE, 'assignment to external variables')
+							}
+							.auto {
+								body << AutoAssign{var.index, l.int_number}
+							}
+						}
+
+						get_and_expect_token(l, input_path, int(`;`))?
+					}
+					int(`(`) {
+						func := vars[name] or {
+							diag(l, input_path, name_where, 'error: function ${name} does not exist')
+							return none
+						}
+
+						mut arg := ?int(none)
+						stb_c_lexer.get_token(l)
+						if l.token != int(`)`) {
+							expect_token(l, input_path, stb_c_lexer.clex_id)
+							var_name := unsafe { cstring_to_vstring(l.string) }
+							var := vars[var_name] or {
+								diag(l, input_path, l.where_firstchar, 'error: variable ${var_name} does not exist')
+								return none
+							}
+
+							arg = var.index
+							get_and_expect_token(l, input_path, int(`)`))?
+						}
+
+						match func.storage {
+							.external {
+								body << Funcall{name, arg}
+							}
+							.auto {
+								todo(l, input_path, name_where, @FILE_LINE, 'calling function from auto variable')
+							}
+						}
+
+						get_and_expect_token(l, input_path, int(`;`))?
+					}
+					else {
+						diag(l, input_path, l.where_firstchar, 'error: unexpected ${token_to_str(l.token)}')
+						return none
+					}
+				}
+			}
+		}
+	}
+}
+
 fn shift[T](mut arr []T) T {
 	first := arr.first()
 	arr.delete(0)
@@ -211,6 +393,7 @@ fn run() ? {
 
 	mut vars := map[string]Var{}
 	mut auto_vars_count := 0
+	mut func_body := []Op{}
 
 	input := os.read_file(input_path) or {
 		eprintln('error: ${err.msg()}: ${os.get_error_msg(err.code()).to_lower()}')
@@ -223,13 +406,9 @@ fn run() ? {
 		string_store.len)
 
 	mut output := strings.new_builder(0)
-	output.writeln('format ELF64')
-	output.writeln('section ".text" executable')
+	generate_fasm_x86_64_header(mut output)
 
 	for {
-		vars.clear()
-		auto_vars_count = 0
-
 		stb_c_lexer.get_token(&l)
 		if l.token == stb_c_lexer.clex_eof {
 			break
@@ -248,129 +427,15 @@ fn run() ? {
 
 		stb_c_lexer.get_token(&l)
 		if l.token == int(`(`) {
-			output.writeln('public ${symbol_name}')
-			output.writeln('${symbol_name}:')
-			output.writeln('  push rbp')
-			output.writeln('  mov rbp, rsp')
-
 			get_and_expect_token(&l, input_path, int(`)`))?
 			get_and_expect_token(&l, input_path, int(`{`))?
 
-			for {
-				stb_c_lexer.get_token(&l)
-				if l.token == int(`}`) {
-					output.writeln('  mov rsp, rbp')
-					output.writeln('  pop rbp')
-					output.writeln('  mov rax, 0')
-					output.writeln('  ret')
-					break
-				}
-				expect_token(&l, input_path, stb_c_lexer.clex_id)?
-				match unsafe { l.string.vstring() } {
-					'extrn' {
-						get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
+			generate_fasm_x86_64_linux_func_prolog(symbol_name, mut output)
+			compile_func_body(&l, input_path, mut vars, &auto_vars_count, mut func_body)?
+			generate_fasm_x86_64_linux_func_body(func_body, mut output)
+			generate_fasm_x86_64_linux_func_epilog(mut output)
 
-						name := unsafe { cstring_to_vstring(l.string) }
-						name_where := l.where_firstchar
-						if existing := vars[name] {
-							diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
-							diag(l, input_path, existing.where, 'info: first definition is located here')
-							return none
-						}
-
-						vars[name] = Var{
-							name:    name
-							storage: .external
-							index:   0
-							where:   name_where
-						}
-
-						output.writeln('  extrn ${name}')
-						get_and_expect_token(&l, input_path, int(`;`))?
-					}
-					'auto' {
-						get_and_expect_token(&l, input_path, stb_c_lexer.clex_id)?
-
-						auto_vars_count += 1
-						name := unsafe { cstring_to_vstring(l.string) }
-						name_where := l.where_firstchar
-						if existing := vars[name] {
-							diag(l, input_path, name_where, 'error: variable ${existing.name} has already been defined')
-							diag(l, input_path, existing.where, 'info: first definition is located here')
-							return none
-						}
-
-						vars[name] = Var{
-							name:    name
-							storage: .auto
-							index:   auto_vars_count
-							where:   name_where
-						}
-
-						output.writeln('  sub rsp, 8')
-						get_and_expect_token(&l, input_path, int(`;`))?
-					}
-					else {
-						name := unsafe { cstring_to_vstring(l.string) }
-						name_where := l.where_firstchar
-						stb_c_lexer.get_token(&l)
-						match l.token {
-							int(`=`) {
-								var := vars[name] or {
-									diag(&l, input_path, name_where, 'error: variable ${name} does not exist')
-									return none
-								}
-
-								get_and_expect_token(&l, input_path, stb_c_lexer.clex_intlit)?
-								match var.storage {
-									.external {
-										todo(l, input_path, name_where, @FILE_LINE, 'assignment to external variables')
-									}
-									.auto {
-										output.writeln('  mov QWORD [rbp-${var.index * 8}], ${l.int_number}')
-									}
-								}
-
-								get_and_expect_token(&l, input_path, int(`;`))?
-							}
-							int(`(`) {
-								func := vars[name] or {
-									diag(&l, input_path, name_where, 'error: function ${name} does not exist')
-									return none
-								}
-
-								stb_c_lexer.get_token(&l)
-								if l.token != int(`)`) {
-									expect_token(&l, input_path, stb_c_lexer.clex_id)
-									var_name := unsafe { cstring_to_vstring(l.string) }
-									var := vars[var_name] or {
-										diag(&l, input_path, l.where_firstchar, 'error: variable ${var_name} does not exist')
-										return none
-									}
-
-									output.writeln('  mov rdi, [rbp-${var.index * 8}]')
-									get_and_expect_token(&l, input_path, int(`)`))?
-								}
-
-								match func.storage {
-									.external {
-										output.writeln('  call ${name}')
-									}
-									.auto {
-										todo(&l, input_path, name_where, @FILE_LINE, 'calling function from auto variable')
-									}
-								}
-
-								get_and_expect_token(&l, input_path, int(`;`))?
-							}
-							else {
-								diag(&l, input_path, l.where_firstchar, 'error: unexpected ${token_to_str(l.token)}')
-								return none
-							}
-						}
-					}
-				}
-			}
+			func_body.clear()
 		} else {
 			todo(&l, input_path, symbol_where, @FILE_LINE, 'global variable definition')
 		}
